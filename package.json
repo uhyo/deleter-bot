@@ -1,0 +1,10 @@
+{
+	"name":"deleter bot",
+	"description":"Mediawiki deleter bot",
+	"version":"0.1.0",
+	"author":"uhyo <uhyohyo@uhyohyohyo.sakura.ne.jp>",
+	"private":true,
+	"dependencies":{
+		"colors":">=0.6"
+	}
+ }
