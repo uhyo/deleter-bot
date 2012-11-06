@@ -42,7 +42,7 @@ DeleterBot.prototype.request=function(method,path,body,callback){
 	}
 	var req=http.request(pathobj,function(res){
 		var status=res.statusCode;
-		console.log(String(status).green,path.grey);
+		this.log(String(status).green,path.grey);
 		if(status===301 || status===302 || status===303 || status===307){
 			//redirect
 			this.get(res.headers.location,callback);
@@ -134,7 +134,7 @@ DeleterBot.prototype.postGetJSON=function(path,body,callback){
 		try{
 			var obj=JSON.parse(res);
 		}catch(e){
-			console.log(res.slice(0,1024*2));
+			bot.log(res.slice(0,1024*2));
 			this.gotError(e);
 		}
 		callback(obj);
@@ -151,6 +151,12 @@ DeleterBot.prototype.setCookie=function(key,value){
 };
 //ログ
 DeleterBot.prototype.log=function(){
+	if(argv.nocolor){
+		//color符号削除
+		for(var i=0,l=arguments.length;i<l;i++){
+			arguments[i]=arguments[i].replace(/\u001b\[\w\w\w/g,"");
+		}
+	}
 	if(!argv.silent){
 		console.log.apply(console,arguments);
 	}
@@ -295,7 +301,7 @@ DeleterBot.prototype.deletePage=function(title,cb){
 		reason:"spam",
 	},{},function(result){
 		//console.log(result);
-		console.log("delete".red,title);
+		bot.log("delete".red,title);
 		cb();
 	});
 };
@@ -309,6 +315,9 @@ DeleterBot.prototype.pageContent=function(title,cb){
 		for(var key in result.pages){
 			//最初のやつ(1つしかない)
 			var pagedata=result.pages[key];
+			if(!pagedata.revisions){
+				console.warn("no revision!",result);
+			}
 			var revdata=pagedata.revisions[0];
 			var content=revdata["*"];
 			cb(content);
@@ -371,7 +380,7 @@ bot.login("username","password",function(){
 	iterator(function handle(page){
 		//page: ひとつのページの情報
 		if(page==null){
-			console.log((deletecount?deletecount:"no"),"pages are deleted.");
+			bot.log((deletecount?deletecount:"no"),"pages are deleted.");
 			return;	//終わり
 		}
 		//新規作成ページ（怪しい）
@@ -379,7 +388,7 @@ bot.login("username","password",function(){
 			bot.englishRate(page.title,function(rate){
 				var rateStr=(rate*100).toPrecision(3)+"%";
 				if(rate*100 >= bot.bot_english_percentage){
-					console.log(page.title,rateStr.red);
+					bot.log(page.title,rateStr.red);
 					//削除レートである
 					if(!argv.dry){
 						//本番
@@ -392,7 +401,7 @@ bot.login("username","password",function(){
 						iterator(handle);
 					}
 				}else{
-					console.log(page.title,rateStr.blue);
+					bot.log(page.title,rateStr.blue);
 					//次へ
 					iterator(handle);
 				}
