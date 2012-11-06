@@ -149,6 +149,12 @@ DeleterBot.prototype.gotError=function(e){
 DeleterBot.prototype.setCookie=function(key,value){
 	this.cookies[key]=value;
 };
+//ログ
+DeleterBot.prototype.log=function(){
+	if(!argv.silent){
+		console.log.apply(console,arguments);
+	}
+};
 //-----------------------------------------
 //Mediawikiに対する処理
 //apiに投げる
@@ -324,6 +330,30 @@ DeleterBot.prototype.englishRate=function(title,cb){
 	});
 };
 //-----------------------------
+//get argv
+var argv=process.argv.slice(2);
+//method set this[flagname] to true/false;
+argv.setFlag=function(flagname){
+	//arguments: param to find!(or)
+	this[flagname]= Array.prototype.slice.call(arguments,1).some.call(arguments,function(x){
+		return this.indexOf(x)>=0;
+	},this);
+};
+argv.setFlag("help","-h","--help");
+argv.setFlag("silent","-s","--silent");
+argv.setFlag("nocolor","-c","--nocolor");
+argv.setFlag("dry","-d","--dry");
+
+//help mode
+if(argv.help){
+	console.log(["commandline params:",
+			"\t-h, --help: show this message",
+			"\t-s, --silent: no debug log",
+			"\t-nc, --nocolor: non-coloured log",
+			"\t-d, --dry: dry run(no delete)",
+			].join("\n"));
+			process.exit();
+}
 // perform
 var setting=new MediaWikiSetting({
 	hostname:"some-mediawiki.org",
@@ -351,11 +381,16 @@ bot.login("username","password",function(){
 				if(rate*100 >= bot.bot_english_percentage){
 					console.log(page.title,rateStr.red);
 					//削除レートである
-					bot.deletePage(page.title,function(){
-						//次へ
+					if(!argv.dry){
+						//本番
+						bot.deletePage(page.title,function(){
+							//次へ
+							iterator(handle);
+						});
+						deletecount++;
+					}else{
 						iterator(handle);
-					});
-					deletecount++;
+					}
 				}else{
 					console.log(page.title,rateStr.blue);
 					//次へ
