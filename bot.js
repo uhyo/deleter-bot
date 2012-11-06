@@ -211,6 +211,10 @@ DeleterBot.prototype.login=function(name,password,cb){
 				//次に標識を確認（可動許可がでているか）
 				this.pageContent("利用者:"+name,function(cont){
 					//標識を探す
+					if(!cont){
+						console.error("利用者:"+name+" is not available");
+						return;
+					}
 					var result=cont.match(/BOT\s*:\s*(\S+)/);
 					if(!result){
 						console.error("no 標識 was found. not working");
@@ -315,12 +319,14 @@ DeleterBot.prototype.pageContent=function(title,cb){
 		for(var key in result.pages){
 			//最初のやつ(1つしかない)
 			var pagedata=result.pages[key];
-			if(!pagedata.revisions){
-				console.warn("no revision!",result);
+			if(pagedata.missing!=null || !pagedata.revisions){
+				this.log("warn ".yellow,("'"+pagedata.title+"'").cyan,"doesn't exist");
+				cb(null)
+			}else{
+				var revdata=pagedata.revisions[0];
+				var content=revdata["*"];
+				cb(content);
 			}
-			var revdata=pagedata.revisions[0];
-			var content=revdata["*"];
-			cb(content);
 			return;
 		}
 	});
@@ -330,6 +336,11 @@ DeleterBot.prototype.pageContent=function(title,cb){
 DeleterBot.prototype.englishRate=function(title,cb){
 	this.pageContent(title,function(content){
 		//英字含有率計算
+		if(!content){
+			//計算できない
+			cb(Number.NaN);
+			return;
+		}
 		var full=content.length;
 		//英字除去
 		var remains=content.replace(/(?:-|\w)/g,"").length;
