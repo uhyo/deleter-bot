@@ -321,7 +321,7 @@ DeleterBot.prototype.pageContent=function(title,cb){
 			var pagedata=result.pages[key];
 			if(pagedata.missing!=null || !pagedata.revisions){
 				this.log("warn ".yellow,("'"+pagedata.title+"'").cyan,"doesn't exist");
-				cb(null)
+				cb(null);
 			}else{
 				var revdata=pagedata.revisions[0];
 				var content=revdata["*"];
@@ -329,7 +329,7 @@ DeleterBot.prototype.pageContent=function(title,cb){
 			}
 			return;
 		}
-	});
+	}.bind(this));
 };
 
 //応用的: ページ名からそのページの英字含有率取得
