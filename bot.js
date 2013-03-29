@@ -23,110 +23,124 @@ function DeleterBot(setting){
 	this.cookies={};	//Cookie
 	//deleteトークンを取得しておく
 	this.deleteToken=null;
+	//503に対してリトライする回数
+	this.retry_count=8;	//8回までリトライ
 }
 //setting
 DeleterBot.prototype.bot_english_percentage=65;	//削除閾値
+DeleterBot.prototype.bot_request_wait=150;	//リクエスト間隔（msec）
 
 DeleterBot.prototype.request=function(method,path,body,callback){
-	var pathobj=this.setting.getObj(path,method);
-	//cookie追加
-	var ck=Object.keys(this.cookies);
-	if(ck.length>0){
-		//
-		var cookieHeader=ck.map(function(key){
-			return key+"="+this.cookies[key];
-		},this).join("; ");
-		pathobj.headers={
-			"Cookie": cookieHeader,
-		};
-	}
-	var req=http.request(pathobj,function(res){
-		var status=res.statusCode;
-		this.log(String(status).green,path.grey);
-		if(status===301 || status===302 || status===303 || status===307){
-			//redirect
-			this.get(res.headers.location,callback);
-			abort();
-			return;
+	setTimeout(function(){
+		var pathobj=this.setting.getObj(path,method);
+		//cookie追加
+		var ck=Object.keys(this.cookies);
+		if(ck.length>0){
+			//
+			var cookieHeader=ck.map(function(key){
+				return key+"="+this.cookies[key];
+			},this).join("; ");
+			pathobj.headers={
+				"Cookie": cookieHeader,
+			};
 		}
-		if(status>=400){
-			//あれれーーーー
-			this.gotError(new Error("aborted."));
-			abort();
-			return;
-		}
-		//まずtypeを解析
-		var type=res.headers["content-type"];
-		var typeres=type.match(/^\s*([-\w]+)\/([-\w]+)\s*(?:;\s*(\S*))?/);
-		if(!typeres){
-			this.gotError(new Error("Unknown content-type: "+type));
-			abort();
-			return;
-		}
-		//受け付けられないやつ
-		if(typeres[1]!=="text"){
-			if(typeres[1]!=="application" || (typeres[2]!=="json" && typeres[2]!=="xml")){
-				//json,xml以外はダメ
-				this.gotError(new Error("Unacceptable content-type:"+type));
+		var req=http.request(pathobj,function(res){
+			var status=res.statusCode;
+			this.log(String(status).green,path.grey);
+			if(status===301 || status===302 || status===303 || status===307){
+				//redirect
+				this.get(res.headers.location,callback);
 				abort();
 				return;
 			}
-		}
-		//charsetを解析
-		var charset="utf8";	//default
-		if(typeres[3]){
-			//parameter
-			var typeres2=typeres[3].match(/charset\s*=\s*([^\s;]+)/i);
-			if(typeres2){
-				//指定あった
-				if(/utf-?8/i.test(typeres2[1])){
-					charst="utf8";
+			if(status>=400){
+				//あれれーーーー
+				if(status===503 && this.retry_count>0){
+					//一時的過負荷。リトライしてみる
+					this.retry_count--;
+					setTimeout(function(){
+						this.request(method,path,body,callback);
+					}.bind(this),10000);
+					return;
 				}else{
-					this.gotError(new Error("unacceptable charset:"+type));
+					this.gotError(new Error("aborted."));
 					abort();
 					return;
 				}
 			}
-		}
-		res.setEncoding(charset);
-
-		var data="";	//貯める
-		res.on("data",function(chunk){
-			data+=chunk;
-		});
-		if("function"===typeof callback){
-			//res: Response
-			res.on("end",function(){
-				callback(data);
-			});
-		}
-		//cookieの処理
-		var c=res.headers["set-cookie"];
-		if(Array.isArray(c)){
-			//肝心部分のみ
-			c.forEach(function(str){
-				var result=str.match(/^([-\w]+)\s*=\s*([^\s;]+)/);
-				if(result){
-					this.setCookie(result[1],result[2]);
+			//まずtypeを解析
+			var type=res.headers["content-type"];
+			var typeres=type.match(/^\s*([-\w]+)\/([-\w]+)\s*(?:;\s*(\S*))?/);
+			if(!typeres){
+				this.gotError(new Error("Unknown content-type: "+type));
+				abort();
+				return;
+			}
+			//受け付けられないやつ
+			if(typeres[1]!=="text"){
+				if(typeres[1]!=="application" || (typeres[2]!=="json" && typeres[2]!=="xml")){
+					//json,xml以外はダメ
+					this.gotError(new Error("Unacceptable content-type:"+type));
+					abort();
+					return;
 				}
-			},this);
-		}
-		//リクエスト終了処理
-		function abort(){
+			}
+			//charsetを解析
+			var charset="utf8";	//default
+			if(typeres[3]){
+				//parameter
+				var typeres2=typeres[3].match(/charset\s*=\s*([^\s;]+)/i);
+				if(typeres2){
+					//指定あった
+					if(/utf-?8/i.test(typeres2[1])){
+						charst="utf8";
+					}else{
+						this.gotError(new Error("unacceptable charset:"+type));
+						abort();
+						return;
+					}
+				}
+			}
+			res.setEncoding(charset);
+
+			var data="";	//貯める
+			res.on("data",function(chunk){
+				data+=chunk;
+			});
+			if("function"===typeof callback){
+				//res: Response
+				res.on("end",function(){
+					callback(data);
+				});
+			}
+			//cookieの処理
+			var c=res.headers["set-cookie"];
+			if(Array.isArray(c)){
+				//肝心部分のみ
+				c.forEach(function(str){
+					var result=str.match(/^([-\w]+)\s*=\s*([^\s;]+)/);
+					if(result){
+						this.setCookie(result[1],result[2]);
+					}
+				},this);
+			}
+			//リクエスト終了処理
+			function abort(){
+				delete callback;
+				res.destroy();
+			}
+		}.bind(this));
+		//クッキー
+		if(body){
+			req.write(body);
+		}	
+		req.end();
+		req.on("error",function(e){
+			this.gotError(e);
 			delete callback;
-			res.destroy();
-		}
-	}.bind(this));
-	//クッキー
-	if(body){
-		req.write(body);
-	}	
-	req.end();
-	req.on("error",function(e){
-		this.gotError(e);
-		delete callback;
-		req.abort();
-	}.bind(this));
+			req.abort();
+		}.bind(this));
+	}.bind(this),this.bot_request_wait);
 };
 DeleterBot.prototype.postGetJSON=function(path,body,callback){
 	this.request("POST",path,body,function(res){
