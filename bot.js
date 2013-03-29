@@ -1,8 +1,11 @@
-var http=require('http'), url=require('url'), colors=require('colors');
+var http=require('http'), url=require('url'),util=require('util'), colors=require('colors');
 
 function MediaWikiSetting(obj){
 	//setting object
 	this.hostname=obj.hostname || "localhost";
+	//db
+	this.useDB=obj.useDB;
+	this.db=obj.db || {};
 }
 MediaWikiSetting.prototype.getObj=function(path,method){
 	//obj for http.get
@@ -25,6 +28,9 @@ function DeleterBot(setting){
 	this.deleteToken=null;
 	//503に対してリトライする回数
 	this.retry_count=8;	//8回までリトライ
+	//リクエストをためる
+	this.active=false;	//現在通信中のリクエストがあるか
+	this.requestQueue=[];	//{method,path,body,callback};
 }
 //setting
 DeleterBot.prototype.bot_english_percentage=65;	//削除閾値
@@ -32,6 +38,17 @@ DeleterBot.prototype.bot_request_wait=150;	//リクエスト間隔（msec）
 
 DeleterBot.prototype.request=function(method,path,body,callback){
 	setTimeout(function(){
+		if(this.active){
+			//まだ通信中!キューにためる
+			this.requestQueue.push({
+				method:method,
+				path:path,
+				body:body,
+				callback:callback,
+			});
+			return;
+		}
+		this.active=true;
 		var pathobj=this.setting.getObj(path,method);
 		//cookie追加
 		var ck=Object.keys(this.cookies);
@@ -107,12 +124,20 @@ DeleterBot.prototype.request=function(method,path,body,callback){
 			res.on("data",function(chunk){
 				data+=chunk;
 			});
-			if("function"===typeof callback){
-				//res: Response
-				res.on("end",function(){
+			//res: Response
+			res.on("end",function(){
+				//リクエスト終了した
+				this.active=false;
+				if("function"===typeof callback){
 					callback(data);
-				});
-			}
+				}
+				if(!this.active && this.requestQueue.length>0){
+					//次のリクエストがたまっている
+					var obj=this.requestQueue.shift();
+					this.request(obj.method,obj.path,obj.body,obj.callback);
+					delete obj;
+				}
+			}.bind(this));
 			//cookieの処理
 			var c=res.headers["set-cookie"];
 			if(Array.isArray(c)){
@@ -139,6 +164,7 @@ DeleterBot.prototype.request=function(method,path,body,callback){
 			this.gotError(e);
 			delete callback;
 			req.abort();
+			this.active=false;
 		}.bind(this));
 	}.bind(this),this.bot_request_wait);
 };
@@ -175,6 +201,16 @@ DeleterBot.prototype.log=function(){
 	if(!argv.silent){
 		console.log.apply(console,arguments);
 	}
+};
+//----------------------------------------
+//DB使用準備
+DeleterBot.prototype.useDB=function(callback){
+	//DBマネージャを準備
+	var c=this.setting.useDB==="mongodb" ? MongoDBManager : DBManager;
+	var db=this.db= new c(this,this.setting.db);
+	db.prepare(function(){
+		callback(db);
+	});
 };
 //-----------------------------------------
 //Mediawikiに対する処理
@@ -252,7 +288,7 @@ DeleterBot.prototype.login=function(name,password,cb){
 };
 //リスト取得クエリ(パラメータをobjで渡す）(paramに対して破壊的) listtype:"recentchanges"とか number:取得ページ数
 //イテレータ関数を返す
-DeleterBot.prototype.eachlist=function(param,listtype,number,cb){
+DeleterBot.prototype.eachlist=function(param,listtype,number){
 	param.action="query";
 	param.list=listtype;
 	//ページストア
@@ -262,7 +298,7 @@ DeleterBot.prototype.eachlist=function(param,listtype,number,cb){
 
 	var t=this;
 	return function iterate(cb){
-		if(count>=number){
+		if(count++>=number){
 			//もういっぱいだ
 			cb(null);
 			return;
@@ -321,7 +357,9 @@ DeleterBot.prototype.deletePage=function(title,cb){
 	},{},function(result){
 		//console.log(result);
 		bot.log("delete".red,title);
-		cb();
+		if(cb){
+			cb();
+		}
 	});
 };
 //ページの内容を取得
@@ -360,10 +398,184 @@ DeleterBot.prototype.englishRate=function(title,cb){
 		//英字除去
 		var remains=content.replace(/(?:-|\w)/g,"").length;
 		var english_rate=(full-remains)/full;
-		cb(english_rate);
+		cb(english_rate,content);
 		return;
 	});
 };
+//----------------------------
+//DBマネージャ
+function DBManager(bot,dbsetting){
+	this.bot=bot;
+	this.dbsetting=dbsetting;
+	//DB処理予約（まだ待ってね）
+	this.bookcount=0;
+	this.closing_flg=false;
+}
+DBManager.prototype.prepare=function(callback){
+	callback();
+};
+DBManager.prototype.close=function(){
+	if(this.bookcount===0){
+		this.closeReal();
+	}
+	this.closing_flg=true;
+};
+DBManager.prototype.closeReal=function(){
+};
+DBManager.prototype.book=function(){
+	if(this.closing_flg){
+		//もうだめだ
+		this.bot.gotError("db is closing");
+		return;
+	}
+	this.bookcount++;
+};
+DBManager.prototype.release=function(){
+	this.bookcount--;
+	if(this.closing_flg && this.bookcount===0){
+		this.closeReal();
+	}
+};
+DBManager.prototype.savePage=function(title,content,mode,callback){
+	//dummy!!!
+	callback();
+}
+DBManager.prototype.deletePage=function(title,callback){
+	if(callback){
+		callback();
+	}
+}
+DBManager.prototype.iteratePages=function(callback){
+	//dummy!!!
+	callback(function(callback){
+		callback(null);
+	});
+};
+DBManager.prototype.countPages=function(callback){
+	callback(0);
+};
+//MongoDB
+function MongoDBManager(){
+	DBManager.apply(this,arguments);
+}
+util.inherits(MongoDBManager,DBManager);
+MongoDBManager.prototype.prepare=function(callback){
+	var _this=this;
+	var bot=this.bot;
+	var mongodb=require('mongodb');
+	var s=this.dbsetting;
+	var db=new mongodb.Db(s.database, new mongodb.Server(s.host,s.port),{w:1});
+	db.open(function(err,client){
+		if(err){
+			bot.gotError(err);
+			return;
+		}
+		if(s.username && s.password){
+			db.authenticate(s.username,s.password,function(err){
+				if(err){
+					bot.gotError(err);
+					return;
+				}
+				//成功
+				gotClient(client);
+			});
+		}else{
+			//成功
+			gotClient(client);
+		}
+	});
+	function gotClient(client){
+		_this.client=client;
+		//インデックス準備
+		client.ensureIndex("pages",{title:1},function(err,index_name){
+			if(err){
+				bot.gotError(err);
+				return;
+			}
+			callback(client);
+		});
+	}
+};
+//終了
+MongoDBManager.prototype.closeReal=function(){
+	this.client.close();
+};
+//コレクション取得
+MongoDBManager.prototype.collection=function(name,callback){
+	var bot=this.bot;
+	this.client.collection(name,function(err,coll){
+		if(err){
+			bot.gotError(err);
+			return;
+		}
+		callback(coll);
+	});
+};
+//具体的操作
+//ページの情報を保存（怪しい）
+MongoDBManager.prototype.savePage=function(title,content,mode,callback){
+	var bot=this.bot;
+	this.collection("pages",function(coll){
+		//mode: "new":新規作成のログ
+		var doc={
+			title:title,
+			content:content,
+			mode:mode,
+		};
+		coll.update({title:title},doc,{
+			safe:true,
+			upsert:true,
+		},function(err){
+			if(err){
+				bot.gotError(err);
+				return;
+			}
+			callback();
+		});
+	});
+};
+MongoDBManager.prototype.deletePage=function(title,callback){
+	var bot=this.bot;
+	this.collection("pages",function(coll){
+		coll.remove({title:title},{w:1},function(err){
+			if(err){
+				bot.gotError(err);
+				return;
+			}
+			if(callback)callback();
+		});
+	});
+};
+//保存されたページをアレする
+MongoDBManager.prototype.iteratePages=function(callback){
+	var bot=this.bot;
+	this.collection("pages",function(coll){
+		var cursor=coll.find();
+		callback(function iterate(callback){
+			cursor.nextObject(function(err,doc){
+				if(err){
+					bot.gotError(err);
+					return;
+				}
+				callback(doc);
+			});
+		});
+	});
+};
+//ページを数える
+MongoDBManager.prototype.countPages=function(callback){
+	var bot=this.bot;
+	this.collection("pages",function(coll){
+		coll.count(function(err,count){
+			if(err){
+				bot.gotError(err);
+				return;
+			}
+			callback(count);
+		});
+	});
+};
+
 //-----------------------------
 //get argv
 var argv=process.argv.slice(2);
@@ -378,6 +590,7 @@ argv.setFlag("help","-h","--help");
 argv.setFlag("silent","-s","--silent");
 argv.setFlag("nocolor","-c","--nocolor");
 argv.setFlag("dry","-d","--dry");
+argv.setFlag("check","--check");
 
 //help mode
 if(argv.help){
@@ -386,53 +599,175 @@ if(argv.help){
 			"\t-s, --silent: no debug log",
 			"\t-nc, --nocolor: non-coloured log",
 			"\t-d, --dry: dry run(no delete)",
+			"\t--check: check pages that remain",
 			].join("\n"));
 			process.exit();
 }
 // perform
 var setting=new MediaWikiSetting({
 	hostname:"some-mediawiki.org",
-});
-var bot=new DeleterBot(setting);
 
-bot.login("username","password",function(){
-	//ログインしたら最新の変更をチェック
-	var deletecount=0;
-	var iterator=bot.eachlist({
-		rctype:"new",
-		rcshow:"!bot",
-		rcprop:"user|title|ids|flags",
-	},"recentchanges",100);
-	iterator(function handle(page){
-		//page: ひとつのページの情報
-		if(page==null){
-			bot.log((deletecount?deletecount:"no"),"pages are deleted.");
-			return;	//終わり
-		}
-		//新規作成ページ（怪しい）
-		if(page.type==="new"){
-			bot.englishRate(page.title,function(rate){
-				var rateStr=(rate*100).toPrecision(3)+"%";
-				if(rate*100 >= bot.bot_english_percentage){
-					bot.log(page.title,rateStr.red);
-					//削除レートである
-					if(!argv.dry){
-						//本番
-						bot.deletePage(page.title,function(){
-							//次へ
-							iterator(handle);
-						});
-						deletecount++;
-					}else{
-						iterator(handle);
-					}
-				}else{
-					bot.log(page.title,rateStr.blue);
-					//次へ
-					iterator(handle);
-				}
-			});
-		}
-		return true;
-	});
+    useDB:"mongodb",
+	db:{
+		host:"localhost",
+		port:27017,
+		username:"test",
+		password:"test",
+		database:"deleter-bot",
+	},
 });
+//wiki user
+var username="***", password="***";
+var bot=new DeleterBot(setting);
+if(argv.check){
+	//DBチェックモード
+	check(bot,argv);
+}else{
+	//普通
+	normal_delete(bot,argv);
+}
+
+function normal_delete(bot,argv){
+	bot.useDB(function(db){
+		bot.login(username,password,function(){
+			//ログインしたら最新の変更をチェック
+			var deletecount=0;
+			var iterator=bot.eachlist({
+				rctype:"new",
+				rcshow:"!bot",
+				rcprop:"user|title|ids|flags",
+			},"recentchanges",500);
+			iterator(function handle(page){
+				//page: ひとつのページの情報
+				if(page==null){
+					bot.log((deletecount?deletecount:"no")+" pages are deleted.");
+					db.close();
+					return;	//終わり
+				}
+				//新規作成ページ（怪しい）
+				if(page.type==="new"){
+					bot.englishRate(page.title,function(rate,content){
+						var rateStr=(rate*100).toPrecision(3)+"%";
+						if(rate*100 >= bot.bot_english_percentage){
+							bot.log(page.title,rateStr.red);
+							//削除レートである
+							if(!argv.dry){
+								//本番
+								bot.deletePage(page.title,function(){
+									//次へ
+									iterator(handle);
+								});
+								deletecount++;
+							}else{
+								iterator(handle);
+							}
+						}else{
+							bot.log(page.title,rateStr.blue);
+							//削除レート未満だ。保存しておく
+							db.book();
+							db.savePage(page.title,content,"new",function(){
+								//次へ
+								db.release();
+								iterator(handle);
+							});
+						}
+					});
+				}
+				return true;
+			});
+		});
+	});
+}
+//DB内のやつをどうにかする
+function check(bot,argv){
+	if(!process.stdout.isTTY){
+		bot.gotError("it's for TTY");
+		return;
+	}
+	bot.useDB(function(db){
+		bot.login(username,password,function(){
+			//Mediawikiにログインした。DBにたまったやつを見ていく
+			argv.silent=true;	//もうbot.logは出さない
+			db.countPages(function(number){
+				var index=1;
+				db.iteratePages(function(iterator){
+					var nowdoc=null;	//現在見ているやつ
+					//入力受付
+					var stdin=process.stdin;
+					stdin.setRawMode(true);
+					stdin.setEncoding("utf8");
+					stdin.resume();
+					stdin.on("data",function(key){
+						if(key==="\u0003"){
+							//Ctrl-Cらしい!
+							//やめる
+							console.log("");
+							argv.silent=false;
+							stdin.pause();
+							db.close();
+							return;
+						}
+						process.stdout.write(key);
+						if(key==="d" || key==="D"){
+							//削除しろ!
+							if(nowdoc){
+								(function(title){
+									db.book();
+									bot.deletePage(title,function(){
+										//DBからも削除
+										db.deletePage(title,function(){
+											db.release();
+										});
+									});
+								})(nowdoc.title);
+							}
+							index++;
+							iterator(handle);
+						}else if(key==="k" || key==="K"){
+							//残す
+							if(nowdoc){
+								(function(title){
+									db.book();
+									db.deletePage(title,function(){
+										db.release();
+									});
+								})(nowdoc.title);
+							}
+							index++;
+							iterator(handle);
+						}
+					});
+					iterator(handle);
+					function handle(doc){
+						if(!doc){
+							//もう終わりだ
+							console.log("");
+							stdin.pause();
+							db.close();
+							argv.silent=false;
+							return;
+						}
+						nowdoc=doc;
+						//内容を表示
+						//全部消す。カーソルを左上へ
+						console.log(process.stdout.isTTY);
+						if(process.stdout.isTTY){
+							console.log(process.stdout.getWindowSize());
+						}
+						process.stdout.write("\u001b[2J\u001b[;f");
+						//内容
+						console.log("\n"+doc.content);
+						//1行めにタイトル表示
+						process.stdout.write("\u001b[;f\u001b[2K");
+						console.log(doc.title.green);
+						//最終行へ
+						var size=process.stdout.getWindowSize();
+						process.stdout.write("\u001b["+size[1]+";0f");
+						process.stdout.write((index+"/"+number).yellow+" ");
+						process.stdout.write("type D to delete; K to keep:".blue);
+					};
+				});
+			});
+		});
+	});
+}
