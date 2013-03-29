@@ -144,6 +144,7 @@ DeleterBot.prototype.postGetJSON=function(path,body,callback){
 //エラーに出会った
 DeleterBot.prototype.gotError=function(e){
 	console.error('error:',e.message);
+	throw e;
 };
 //クッキーを設定する
 DeleterBot.prototype.setCookie=function(key,value){
